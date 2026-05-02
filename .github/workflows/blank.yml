@@ -1,24 +1,39 @@
-name: OBET-VPS
+name: OBET-VPS-V2
 on: workflow_dispatch
 jobs:
   build:
     runs-on: windows-latest
     steps:
-    - name: Mengaktifkan RDP
+    - name: Konfigurasi Akses RDP Sakti
       run: |
+        # Aktifkan Remote Desktop
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
+        
+        # Buka Firewall se-akar-akarnya buat RDP
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1
-    - name: Buat Password & Cek IP
+        netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
+        
+        # Paksa servis RDP jalan
+        Set-Service TermService -StartupType Automatic
+        Start-Service TermService
+        
+    - name: Buat User & Cek IP
       run: |
+        # Buat user admin
         net user runneradmin OBETganteng123! /add
         net localgroup administrators runneradmin /add
+        
+        # Cek IP (Ini yang lo copas nanti)
+        Write-Host "PENTING: IP VPS LO ADALAH:"
         curl ifconfig.me
-    - name: Jaga VPS Tetap Hidup
+        Write-Host "`n"
+        
+    - name: Jaga VPS Tetap Hidup (6 Jam)
       run: |
         $n = 360
         do {
-          Write-Host "VPS Masih Jalan..."
+          Write-Host "VPS Masih Jalan Cok... Jangan di Close GitHub-nya!"
           Start-Sleep -Seconds 60
           $n--
         } while ($n -gt 0)
