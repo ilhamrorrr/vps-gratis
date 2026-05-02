@@ -1,29 +1,32 @@
-name: OBET-NGROK-VPS
+name: OBET-VPS-NGROK-FINAL
 on: workflow_dispatch
 jobs:
   build:
     runs-on: windows-latest
     steps:
-    - name: Download Ngrok
+    - name: Download & Install Ngrok (Cara Baru)
       run: |
-        Invoke-WebRequest https://bin.equinox.io/c/b342PueNQ29/ngrok-v3-stable-windows-amd64.zip -OutFile ngrok.zip
-        Expand-Archive ngrok.zip
+        curl -L -o ngrok.zip https://bin.equinox.io/c/b342PueNQ29/ngrok-v3-stable-windows-amd64.zip
+        Expand-Archive ngrok.zip -DestinationPath .
     - name: Authenticate Ngrok
-      run: .\ngrok\ngrok.exe authtoken 3DAl4o6ASNnyJianbboXorSyj2E_3zi3EFadjDsDcoMB2RMiD
-    - name: Aktifkan RDP
+      run: ./ngrok.exe authtoken 3DAl4o6ASNnyJianbboXorSyj2E_3zi3EFadjDsDcoMB2RMiD
+    - name: Aktifkan RDP (Pintu Masuk)
       run: |
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-    - name: Create User
+    - name: Buat User Admin
       run: |
         net user runneradmin OBETganteng123! /add
         net localgroup administrators runneradmin /add
-    - name: Buka Terowongan RDP
-      run: start .\ngrok\ngrok.exe tcp 3389
-    - name: Cek Alamat RDP
+    - name: Buka Jalur Tikus Ngrok
+      run: start ./ngrok.exe tcp 3389
+    - name: Cek Alamat RDP (PENTING!)
       run: |
+        Start-Sleep -Seconds 10
         $response = curl http://localhost:4040/api/tunnels | ConvertFrom-Json
-        Write-Host "ALAMAT RDP LO ADALAH:"
+        Write-Host "--- ALAMAT RDP LO ADALAH ---"
         $response.tunnels[0].public_url
-    - name: Jaga VPS
+        Write-Host "----------------------------"
+    - name: Jaga VPS Tetap Hidup
       run: Start-Sleep -Seconds 21600
