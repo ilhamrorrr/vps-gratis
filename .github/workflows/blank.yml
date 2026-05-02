@@ -1,16 +1,16 @@
-name: OBET-VPS-NGROK-FINAL
+name: OBET-VPS-NGROK-V3-FIX
 on: workflow_dispatch
 jobs:
   build:
     runs-on: windows-latest
     steps:
-    - name: Download & Install Ngrok (Cara Baru)
+    - name: Download & Extract Ngrok
       run: |
         curl -L -o ngrok.zip https://bin.equinox.io/c/b342PueNQ29/ngrok-v3-stable-windows-amd64.zip
-        Expand-Archive ngrok.zip -DestinationPath .
+        tar -xf ngrok.zip
     - name: Authenticate Ngrok
       run: ./ngrok.exe authtoken 3DAl4o6ASNnyJianbboXorSyj2E_3zi3EFadjDsDcoMB2RMiD
-    - name: Aktifkan RDP (Pintu Masuk)
+    - name: Aktifkan RDP
       run: |
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
@@ -21,11 +21,11 @@ jobs:
         net localgroup administrators runneradmin /add
     - name: Buka Jalur Tikus Ngrok
       run: start ./ngrok.exe tcp 3389
-    - name: Cek Alamat RDP (PENTING!)
+    - name: Cek Alamat RDP
       run: |
-        Start-Sleep -Seconds 10
+        Start-Sleep -Seconds 15
         $response = curl http://localhost:4040/api/tunnels | ConvertFrom-Json
-        Write-Host "--- ALAMAT RDP LO ADALAH ---"
+        Write-Host "--- SALIN ALAMAT INI COK ---"
         $response.tunnels[0].public_url
         Write-Host "----------------------------"
     - name: Jaga VPS Tetap Hidup
