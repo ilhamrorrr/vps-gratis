@@ -1,0 +1,24 @@
+name: OBET-VPS
+on: workflow_dispatch
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+    - name: Mengaktifkan RDP
+      run: |
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1
+    - name: Buat Password & Cek IP
+      run: |
+        net user runneradmin OBETganteng123! /add
+        net localgroup administrators runneradmin /add
+        curl ifconfig.me
+    - name: Jaga VPS Tetap Hidup
+      run: |
+        $n = 360
+        do {
+          Write-Host "VPS Masih Jalan..."
+          Start-Sleep -Seconds 60
+          $n--
+        } while ($n -gt 0)
