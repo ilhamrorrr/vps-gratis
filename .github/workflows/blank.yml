@@ -1,39 +1,29 @@
-name: OBET-VPS-V2
+name: OBET-NGROK-VPS
 on: workflow_dispatch
 jobs:
   build:
     runs-on: windows-latest
     steps:
-    - name: Konfigurasi Akses RDP Sakti
+    - name: Download Ngrok
       run: |
-        # Aktifkan Remote Desktop
+        Invoke-WebRequest https://bin.equinox.io/c/b342PueNQ29/ngrok-v3-stable-windows-amd64.zip -OutFile ngrok.zip
+        Expand-Archive ngrok.zip
+    - name: Authenticate Ngrok
+      run: .\ngrok\ngrok.exe authtoken 3DAl4o6ASNnyJianbboXorSyj2E_3zi3EFadjDsDcoMB2RMiD
+    - name: Aktifkan RDP
+      run: |
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
-        
-        # Buka Firewall se-akar-akarnya buat RDP
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-        netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
-        
-        # Paksa servis RDP jalan
-        Set-Service TermService -StartupType Automatic
-        Start-Service TermService
-        
-    - name: Buat User & Cek IP
+    - name: Create User
       run: |
-        # Buat user admin
         net user runneradmin OBETganteng123! /add
         net localgroup administrators runneradmin /add
-        
-        # Cek IP (Ini yang lo copas nanti)
-        Write-Host "PENTING: IP VPS LO ADALAH:"
-        curl ifconfig.me
-        Write-Host "`n"
-        
-    - name: Jaga VPS Tetap Hidup (6 Jam)
+    - name: Buka Terowongan RDP
+      run: start .\ngrok\ngrok.exe tcp 3389
+    - name: Cek Alamat RDP
       run: |
-        $n = 360
-        do {
-          Write-Host "VPS Masih Jalan Cok... Jangan di Close GitHub-nya!"
-          Start-Sleep -Seconds 60
-          $n--
-        } while ($n -gt 0)
+        $response = curl http://localhost:4040/api/tunnels | ConvertFrom-Json
+        Write-Host "ALAMAT RDP LO ADALAH:"
+        $response.tunnels[0].public_url
+    - name: Jaga VPS
+      run: Start-Sleep -Seconds 21600
