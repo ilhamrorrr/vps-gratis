@@ -1,15 +1,13 @@
-name: OBET-VPS-NGROK-V3-FIX
+name: OBET-VPS-JALUR-SULTAN
 on: workflow_dispatch
 jobs:
   build:
     runs-on: windows-latest
     steps:
-    - name: Download & Extract Ngrok
-      run: |
-        curl -L -o ngrok.zip https://bin.equinox.io/c/b342PueNQ29/ngrok-v3-stable-windows-amd64.zip
-        tar -xf ngrok.zip
+    - name: Install Ngrok Otomatis
+      run: choco install ngrok
     - name: Authenticate Ngrok
-      run: ./ngrok.exe authtoken 3DAl4o6ASNnyJianbboXorSyj2E_3zi3EFadjDsDcoMB2RMiD
+      run: ngrok authtoken 3DAl4o6ASNnyJianbboXorSyj2E_3zi3EFadjDsDcoMB2RMiD
     - name: Aktifkan RDP
       run: |
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
@@ -19,11 +17,11 @@ jobs:
       run: |
         net user runneradmin OBETganteng123! /add
         net localgroup administrators runneradmin /add
-    - name: Buka Jalur Tikus Ngrok
-      run: start ./ngrok.exe tcp 3389
-    - name: Cek Alamat RDP
+    - name: Jalankan Terowongan
+      run: Start-Process ngrok -ArgumentList "tcp 3389"
+    - name: Ambil Alamat RDP
       run: |
-        Start-Sleep -Seconds 15
+        Start-Sleep -Seconds 20
         $response = curl http://localhost:4040/api/tunnels | ConvertFrom-Json
         Write-Host "--- SALIN ALAMAT INI COK ---"
         $response.tunnels[0].public_url
