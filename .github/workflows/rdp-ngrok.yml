@@ -1,0 +1,203 @@
+name: Windows RDP via Ngrok
+
+on:
+  workflow_dispatch:
+    inputs:
+      ngrok_token:
+        description: 'Ngrok Authtoken (atau gunakan secret NGROK_AUTH_TOKEN)'
+        required: false
+        default: ''
+      rdp_duration:
+        description: 'Durasi sesi RDP dalam menit (max 350)'
+        required: false
+        default: '60'
+
+jobs:
+  rdp:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+      # ──────────────────────────────────────────────
+      # 1. Generate password acak untuk runneradmin
+      # ──────────────────────────────────────────────
+      - name: Generate & Set Password for runneradmin
+        shell: powershell
+        run: |
+          # Buat password acak 16 karakter (huruf besar, kecil, angka, simbol)
+          $chars  = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*'
+          $random = -join ((1..16) | ForEach-Object { $chars[(Get-Random -Maximum $chars.Length)] })
+
+          # Paksa agar mengandung semua kategori karakter
+          $password = "Rdp@" + $random
+
+          # Simpan ke env agar bisa dipakai step berikutnya
+          echo "RDP_PASS=$password" >> $env:GITHUB_ENV
+
+          # Terapkan ke akun runneradmin
+          net user runneradmin $password
+
+          Write-Host "=========================================="
+          Write-Host " [+] Password runneradmin berhasil di-set"
+          Write-Host "     Password : $password"
+          Write-Host "=========================================="
+
+      # ──────────────────────────────────────────────
+      # 2. Aktifkan Remote Desktop (RDP)
+      # ──────────────────────────────────────────────
+      - name: Enable Remote Desktop
+        shell: powershell
+        run: |
+          # Aktifkan RDP via registry
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+            -Name "fDenyTSConnections" -Value 0
+
+          # Izinkan koneksi tanpa Network Level Authentication (opsional, lebih kompatibel)
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+            -Name "UserAuthentication" -Value 0
+
+          # Buka firewall untuk RDP
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+
+          # Tambahkan runneradmin ke grup Remote Desktop Users
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "runneradmin" -ErrorAction SilentlyContinue
+
+          Write-Host "[+] Remote Desktop telah diaktifkan"
+
+      # ──────────────────────────────────────────────
+      # 3. Install & Jalankan Ngrok
+      # ──────────────────────────────────────────────
+      - name: Install Ngrok
+        shell: powershell
+        run: |
+          $ngrokUrl = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip"
+          $zipPath  = "$env:TEMP\ngrok.zip"
+          $destPath = "C:\ngrok"
+
+          Write-Host "[*] Mengunduh Ngrok..."
+          Invoke-WebRequest -Uri $ngrokUrl -OutFile $zipPath -UseBasicParsing
+
+          New-Item -ItemType Directory -Force -Path $destPath | Out-Null
+          Expand-Archive -Path $zipPath -DestinationPath $destPath -Force
+
+          # Tambahkan ke PATH session ini
+          $env:PATH += ";C:\ngrok"
+          echo "C:\ngrok" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+          Write-Host "[+] Ngrok berhasil diinstall di $destPath"
+
+      - name: Authenticate & Start Ngrok Tunnel
+        shell: powershell
+        env:
+          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
+        run: |
+          # Gunakan token dari input manual jika ada, fallback ke secret
+          $token = "${{ github.event.inputs.ngrok_token }}"
+          if ([string]::IsNullOrWhiteSpace($token)) {
+            $token = $env:NGROK_AUTH_TOKEN
+          }
+
+          if ([string]::IsNullOrWhiteSpace($token)) {
+            Write-Error "[!] NGROK_AUTH_TOKEN tidak ditemukan! Tambahkan secret atau isi input ngrok_token."
+            exit 1
+          }
+
+          # Autentikasi Ngrok
+          C:\ngrok\ngrok.exe config add-authtoken $token
+          Write-Host "[+] Ngrok authtoken berhasil dikonfigurasi"
+
+          # Jalankan tunnel TCP ke port RDP (3389) sebagai background process
+          $ngrokProc = Start-Process -FilePath "C:\ngrok\ngrok.exe" `
+            -ArgumentList "tcp 3389 --log=stdout" `
+            -RedirectStandardOutput "$env:TEMP\ngrok.log" `
+            -PassThru -WindowStyle Hidden
+
+          Write-Host "[*] Ngrok PID: $($ngrokProc.Id) — menunggu tunnel aktif..."
+
+          # Tunggu API Ngrok siap (maks 30 detik)
+          $maxWait = 30
+          $elapsed = 0
+          do {
+            Start-Sleep -Seconds 2
+            $elapsed += 2
+            try {
+              $resp = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels" -ErrorAction Stop
+              break
+            } catch {
+              Write-Host "   ... menunggu Ngrok API ($elapsed/$maxWait detik)"
+            }
+          } while ($elapsed -lt $maxWait)
+
+          if ($elapsed -ge $maxWait) {
+            Write-Error "[!] Ngrok API tidak merespons setelah $maxWait detik."
+            Get-Content "$env:TEMP\ngrok.log" | Select-Object -Last 20
+            exit 1
+          }
+
+          Write-Host "[+] Ngrok tunnel aktif!"
+
+      # ──────────────────────────────────────────────
+      # 4. Tampilkan info koneksi RDP dari API Ngrok
+      # ──────────────────────────────────────────────
+      - name: Display RDP Connection Info
+        shell: powershell
+        run: |
+          # Ambil data tunnel dari Ngrok local API
+          $tunnelData = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels"
+          $tunnel     = $tunnelData.tunnels | Select-Object -First 1
+
+          # Parse host dan port dari public_url (format: tcp://X.tcp.ngrok.io:XXXXX)
+          $publicUrl  = $tunnel.public_url
+          $rdpAddress = $publicUrl -replace "tcp://", ""
+
+          $rdpHost = $rdpAddress.Split(":")[0]
+          $rdpPort = $rdpAddress.Split(":")[1]
+
+          Write-Host ""
+          Write-Host "╔══════════════════════════════════════════════════╗"
+          Write-Host "║           🖥️  INFORMASI KONEKSI RDP              ║"
+          Write-Host "╠══════════════════════════════════════════════════╣"
+          Write-Host "║  Alamat RDP  : $rdpAddress"
+          Write-Host "║  Host        : $rdpHost"
+          Write-Host "║  Port        : $rdpPort"
+          Write-Host "║  Username    : runneradmin"
+          Write-Host "║  Password    : $env:RDP_PASS"
+          Write-Host "╠══════════════════════════════════════════════════╣"
+          Write-Host "║  Cara connect di Windows:                        ║"
+          Write-Host "║  1. Tekan Win+R → ketik: mstsc                   ║"
+          Write-Host "║  2. Computer: $rdpAddress"
+          Write-Host "║  3. Klik Connect → masukkan kredensial di atas   ║"
+          Write-Host "║                                                  ║"
+          Write-Host "║  Cara connect di Mac/Linux:                      ║"
+          Write-Host "║  Gunakan Microsoft Remote Desktop / Remmina      ║"
+          Write-Host "╚══════════════════════════════════════════════════╝"
+          Write-Host ""
+
+          # Simpan ke env untuk referensi step berikutnya
+          echo "RDP_ADDRESS=$rdpAddress" >> $env:GITHUB_ENV
+
+      # ──────────────────────────────────────────────
+      # 5. Keep-alive — jaga sesi tetap hidup
+      # ──────────────────────────────────────────────
+      - name: Keep Session Alive
+        shell: powershell
+        run: |
+          $duration = [int]"${{ github.event.inputs.rdp_duration }}"
+          if ($duration -lt 1 -or $duration -gt 350) { $duration = 60 }
+
+          $endTime = (Get-Date).AddMinutes($duration)
+
+          Write-Host "[*] Sesi RDP akan aktif selama $duration menit"
+          Write-Host "[*] Akan berakhir pada: $endTime"
+          Write-Host "[*] Alamat RDP: $env:RDP_ADDRESS"
+          Write-Host ""
+
+          $interval = 60   # update log setiap 60 detik
+          while ((Get-Date) -lt $endTime) {
+            $remaining = [math]::Round(($endTime - (Get-Date)).TotalMinutes, 1)
+            Write-Host "$(Get-Date -Format 'HH:mm:ss') | Sisa waktu: $remaining menit | RDP: $env:RDP_ADDRESS"
+            Start-Sleep -Seconds $interval
+          }
+
+          Write-Host ""
+          Write-Host "[!] Sesi RDP telah berakhir. Workflow selesai."
