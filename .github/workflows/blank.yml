@@ -1,45 +1,49 @@
-name: OBET-VPS-ANTI-ERROR
+name: OBET-VPS-LAST-HOPE
 on: workflow_dispatch
 jobs:
   build:
     runs-on: windows-latest
     steps:
-    - name: Install Ngrok
-      run: choco install ngrok
+    - name: Install Ngrok (Jalur Resmi)
+      run: choco install ngrok --no-progress
     - name: Authenticate Ngrok
       run: ngrok authtoken 3DAl4o6ASNnyJianbboXorSyj2E_3zi3EFadjDsDcoMB2RMiD
-    - name: Aktifkan RDP
+    - name: Aktifkan RDP & Beresin User
       run: |
+        # Aktifkan RDP
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-    - name: Set Password User
-      # Kita pake 'continue-on-error' biar kalau Windows ngomel, proses tetep lanjut!
-      continue-on-error: true
-      run: |
-        net user runneradmin ObetGanteng1
+        
+        # Update user (Biar gak error 1378 atau masalah password)
+        net user runneradmin ObetGanteng123! /add
+        net user runneradmin ObetGanteng123!
         net localgroup administrators runneradmin /add
+      continue-on-error: true
     - name: Jalankan Terowongan
       run: Start-Process ngrok -ArgumentList "tcp 3389"
-    - name: Ambil Alamat RDP (Sambil Nunggu)
+    - name: Ambil Alamat RDP (Logic Baru)
       run: |
-        Write-Host "Lagi nyari jalur tikus, tungguin bentar Cok..."
-        $n = 10
+        Write-Host "Lagi nyari jalur tikus, sabar Cok..."
+        Start-Sleep -Seconds 30
+        $n = 5
         while($n -gt 0) {
           try {
-            $response = curl http://localhost:4040/api/tunnels -ErrorAction Stop | ConvertFrom-Json
-            $url = $response.tunnels[0].public_url
-            if ($url) {
+            # Pake Invoke-RestMethod biar gak bentrok sama alias curl
+            $tunnels = (Invoke-RestMethod -Uri http://localhost:4040/api/tunnels).tunnels
+            if ($tunnels) {
+              $url = $tunnels[0].public_url
               Write-Host "`n--- SALIN ALAMAT INI COK ---"
               Write-Host $url
               Write-Host "----------------------------`n"
-              break
+              return
             }
           } catch {
-            Write-Host "Ngrok belum bangun... sisa nyawa: $n"
-            Start-Sleep -Seconds 5
+            Write-Host "Ngrok belum siap... nunggu 10 detik lagi (Sisa nyawa: $n)"
+            Start-Sleep -Seconds 10
             $n--
           }
         }
+        throw "Ngrok gagal bangun, Cok! Coba cek token atau restart workflow."
     - name: Jaga VPS Tetap Hidup
       run: Start-Sleep -Seconds 21600
