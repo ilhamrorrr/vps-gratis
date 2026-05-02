@@ -1,10 +1,10 @@
-name: OBET-VPS-JALUR-SULTAN
+name: OBET-VPS-JALUR-SULTAN-V2
 on: workflow_dispatch
 jobs:
   build:
     runs-on: windows-latest
     steps:
-    - name: Install Ngrok Otomatis
+    - name: Install Ngrok
       run: choco install ngrok
     - name: Authenticate Ngrok
       run: ngrok authtoken 3DAl4o6ASNnyJianbboXorSyj2E_3zi3EFadjDsDcoMB2RMiD
@@ -13,10 +13,12 @@ jobs:
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-    - name: Buat User Admin
+    - name: Set Password User
       run: |
-        net user runneradmin OBETganteng123! /add
-        net localgroup administrators runneradmin /add
+        # Password dipendekin jadi 12 karakter biar gak ditanya-tanya
+        # Pake perintah net user langsung ke runneradmin yang udah ada
+        net user runneradmin ObetGanteng1 /add || net user runneradmin ObetGanteng1
+        net localgroup administrators runneradmin /add || ver > nul
     - name: Jalankan Terowongan
       run: Start-Process ngrok -ArgumentList "tcp 3389"
     - name: Ambil Alamat RDP
