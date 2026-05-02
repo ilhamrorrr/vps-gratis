@@ -1,4 +1,4 @@
-name: OBET-VPS-JALUR-SULTAN-V2
+name: OBET-VPS-NGROK-FINAL-FIX
 on: workflow_dispatch
 jobs:
   build:
@@ -15,10 +15,12 @@ jobs:
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
     - name: Set Password User
       run: |
-        # Password dipendekin jadi 12 karakter biar gak ditanya-tanya
-        # Pake perintah net user langsung ke runneradmin yang udah ada
-        net user runneradmin ObetGanteng1 /add || net user runneradmin ObetGanteng1
-        net localgroup administrators runneradmin /add || ver > nul
+        # Langsung update password runneradmin yang udah ada
+        net user runneradmin ObetGanteng1
+        # Abaikan error kalau dia udah jadi admin
+        net localgroup administrators runneradmin /add
+        Write-Host "User siap!"
+      continue-on-error: true
     - name: Jalankan Terowongan
       run: Start-Process ngrok -ArgumentList "tcp 3389"
     - name: Ambil Alamat RDP
