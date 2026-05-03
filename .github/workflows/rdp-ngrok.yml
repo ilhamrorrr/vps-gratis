@@ -1,12 +1,8 @@
-name: Windows RDP via Ngrok
+name: Windows RDP via playit.gg
 
 on:
   workflow_dispatch:
     inputs:
-      ngrok_token:
-        description: 'Ngrok Authtoken (atau gunakan secret NGROK_AUTH_TOKEN)'
-        required: false
-        default: ''
       rdp_duration:
         description: 'Durasi sesi RDP dalam menit (max 350)'
         required: false
@@ -19,22 +15,25 @@ jobs:
 
     steps:
 
+      # ─────────────────────────────────────────
+      # 1. Generate password acak untuk runneradmin
+      # ─────────────────────────────────────────
       - name: Generate & Set Password for runneradmin
         shell: powershell
         run: |
-          $chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*'
-          $random = -join ((1..16) | ForEach-Object { $chars[(Get-Random -Maximum $chars.Length)] })
+          $chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+          $random = -join ((1..12) | ForEach-Object { $chars[(Get-Random -Maximum $chars.Length)] })
           $password = "Rdp@" + $random
-
           echo "RDP_PASS=$password" >> $env:GITHUB_ENV
-
           net user runneradmin $password
-
           Write-Host "=========================================="
-          Write-Host "[+] Password runneradmin berhasil di-set"
-          Write-Host "    Password : $password"
+          Write-Host "[+] Username : runneradmin"
+          Write-Host "[+] Password : $password"
           Write-Host "=========================================="
 
+      # ─────────────────────────────────────────
+      # 2. Aktifkan RDP
+      # ─────────────────────────────────────────
       - name: Enable Remote Desktop
         shell: powershell
         run: |
@@ -44,96 +43,184 @@ jobs:
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "runneradmin" -ErrorAction SilentlyContinue
           Write-Host "[+] Remote Desktop telah diaktifkan"
 
-      - name: Install Ngrok
+      # ─────────────────────────────────────────
+      # 3. Download & jalankan playit agent
+      #    Agent akan print claim URL di log
+      #    Buka URL tsb di browser lalu klik Approve
+      # ─────────────────────────────────────────
+      - name: Download playit Agent
         shell: powershell
         run: |
-          $ngrokUrl = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip"
-          $zipPath = "$env:TEMP\ngrok.zip"
-          $destPath = "C:\ngrok"
+          $url = "https://github.com/playit-cloud/playit-agent/releases/latest/download/playit-windows-x86_64.exe"
+          $dest = "C:\playit\playit.exe"
+          New-Item -ItemType Directory -Force -Path "C:\playit" | Out-Null
+          Write-Host "[*] Mengunduh playit agent..."
+          Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing
+          Write-Host "[+] playit agent berhasil didownload"
 
-          Write-Host "[*] Mengunduh Ngrok..."
-          Invoke-WebRequest -Uri $ngrokUrl -OutFile $zipPath -UseBasicParsing
-
-          New-Item -ItemType Directory -Force -Path $destPath | Out-Null
-          Expand-Archive -Path $zipPath -DestinationPath $destPath -Force
-
-          echo "C:\ngrok" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          Write-Host "[+] Ngrok berhasil diinstall di $destPath"
-
-      - name: Authenticate & Start Ngrok Tunnel
+      - name: Start playit Tunnel & Show Claim URL
         shell: powershell
-        env:
-          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
         run: |
-          $inputToken = "${{ github.event.inputs.ngrok_token }}"
-          $secretToken = $env:NGROK_AUTH_TOKEN
+          $logFile = "C:\playit\playit.log"
+          New-Item -ItemType File -Force -Path $logFile | Out-Null
 
-          if ($inputToken -ne "") {
-            $token = $inputToken
-          } else {
-            $token = $secretToken
-          }
+          Write-Host "[*] Menjalankan playit agent..."
 
-          if ($token -eq "" -or $null -eq $token) {
-            Write-Error "[!] NGROK_AUTH_TOKEN tidak ditemukan!"
-            exit 1
-          }
+          $proc = Start-Process -FilePath "C:\playit\playit.exe" `
+            -RedirectStandardOutput $logFile `
+            -RedirectStandardError "C:\playit\playit-err.log" `
+            -PassThru -WindowStyle Hidden
 
-          C:\ngrok\ngrok.exe config add-authtoken $token
-          Write-Host "[+] Ngrok authtoken berhasil dikonfigurasi"
+          Write-Host "[*] playit PID: $($proc.Id)"
+          Write-Host "[*] Menunggu claim URL muncul di log..."
+          Write-Host ""
 
-          $ngrokArgs = "tcp 3389"
-          Start-Process -FilePath "C:\ngrok\ngrok.exe" -ArgumentList $ngrokArgs -RedirectStandardOutput "$env:TEMP\ngrok.log" -WindowStyle Hidden
-          Write-Host "[*] Ngrok process dimulai, menunggu tunnel aktif..."
-
-          $maxWait = 30
+          $maxWait = 60
           $elapsed = 0
-          $tunnelReady = $false
+          $claimUrl = ""
 
           while ($elapsed -lt $maxWait) {
             Start-Sleep -Seconds 2
             $elapsed = $elapsed + 2
-            try {
-              $resp = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels" -ErrorAction Stop
-              if ($resp.tunnels.Count -gt 0) {
-                $tunnelReady = $true
+
+            if (Test-Path $logFile) {
+              $content = Get-Content $logFile -Raw -ErrorAction SilentlyContinue
+              if ($content -match "(https://playit\.gg/claim/[A-Za-z0-9_-]+)") {
+                $claimUrl = $Matches[1]
                 break
               }
-            } catch {
-              $msg = "menunggu Ngrok API... ($elapsed/$maxWait detik)"
-              Write-Host $msg
+              if ($content -match "(https://playit\.gg/[A-Za-z0-9/_-]+claim[A-Za-z0-9/_-]*)") {
+                $claimUrl = $Matches[1]
+                break
+              }
             }
+
+            Write-Host "menunggu claim URL... ($elapsed/$maxWait detik)"
           }
 
-          if (-not $tunnelReady) {
-            Write-Host "[!] Log Ngrok:"
-            Get-Content "$env:TEMP\ngrok.log" -ErrorAction SilentlyContinue | Select-Object -Last 20
-            Write-Error "[!] Ngrok API tidak merespons setelah $maxWait detik."
-            exit 1
+          if ($claimUrl -eq "") {
+            Write-Host ""
+            Write-Host "[!] Claim URL tidak ditemukan. Isi log playit:"
+            Get-Content $logFile -ErrorAction SilentlyContinue
+            Get-Content "C:\playit\playit-err.log" -ErrorAction SilentlyContinue
+          } else {
+            Write-Host ""
+            Write-Host "===================================================="
+            Write-Host "  BUKA URL INI DI BROWSER UNTUK APPROVE TUNNEL:"
+            Write-Host ""
+            Write-Host "  $claimUrl"
+            Write-Host ""
+            Write-Host "  Setelah approve, tunnel RDP akan aktif."
+            Write-Host "  Lihat step berikutnya untuk alamat RDP."
+            Write-Host "===================================================="
+            echo "PLAYIT_CLAIM_URL=$claimUrl" >> $env:GITHUB_ENV
           }
 
-          Write-Host "[+] Ngrok tunnel aktif!"
-
-      - name: Display RDP Connection Info
+      # ─────────────────────────────────────────
+      # 4. Tunggu tunnel aktif lalu tampilkan alamat RDP
+      #    Setelah kamu approve di browser,
+      #    playit akan assign alamat TCP
+      # ─────────────────────────────────────────
+      - name: Wait for Tunnel Approval & Show RDP Address
         shell: powershell
         run: |
-          $tunnelData = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels"
-          $tunnel = $tunnelData.tunnels | Select-Object -First 1
-          $publicUrl = $tunnel.public_url
-          $rdpAddress = $publicUrl -replace "tcp://", ""
-          $parts = $rdpAddress.Split(":")
-          $rdpHost = $parts[0]
-          $rdpPort = $parts[1]
+          Write-Host "[*] Menunggu kamu approve tunnel di browser..."
+          Write-Host "[*] Buka URL ini jika belum: $env:PLAYIT_CLAIM_URL"
+          Write-Host ""
+
+          $logFile = "C:\playit\playit.log"
+          $maxWait = 120
+          $elapsed = 0
+          $rdpAddress = ""
+
+          while ($elapsed -lt $maxWait) {
+            Start-Sleep -Seconds 3
+            $elapsed = $elapsed + 3
+
+            if (Test-Path $logFile) {
+              $content = Get-Content $logFile -Raw -ErrorAction SilentlyContinue
+
+              # Cari pola alamat TCP dari playit (format: X.auto.playit.gg:PORT atau IP:PORT)
+              if ($content -match "(\d+\.\d+\.\d+\.\d+:\d+)") {
+                $rdpAddress = $Matches[1]
+                break
+              }
+              if ($content -match "([a-z0-9\-]+\.auto\.playit\.gg:\d+)") {
+                $rdpAddress = $Matches[1]
+                break
+              }
+              if ($content -match "tunnel.*?([a-z0-9\-\.]+:\d{4,5})") {
+                $rdpAddress = $Matches[1]
+                break
+              }
+            }
+
+            $remaining = $maxWait - $elapsed
+            Write-Host "menunggu approval... sisa $remaining detik"
+          }
+
           $rdpPass = $env:RDP_PASS
 
+          if ($rdpAddress -ne "") {
+            echo "RDP_ADDRESS=$rdpAddress" >> $env:GITHUB_ENV
+            Write-Host ""
+            Write-Host "===================================================="
+            Write-Host "        INFORMASI KONEKSI RDP"
+            Write-Host "===================================================="
+            Write-Host "  Alamat RDP  : $rdpAddress"
+            Write-Host "  Username    : runneradmin"
+            Write-Host "  Password    : $rdpPass"
+            Write-Host "===================================================="
+            Write-Host "  Cara connect:"
+            Write-Host "  1. Win+R -> ketik: mstsc"
+            Write-Host "  2. Computer: $rdpAddress"
+            Write-Host "  3. Klik Connect -> masukkan kredensial"
+            Write-Host "===================================================="
+          } else {
+            Write-Host ""
+            Write-Host "[!] Alamat RDP belum terdeteksi otomatis."
+            Write-Host "    Cek dashboard playit.gg -> Tunnels"
+            Write-Host "    Username : runneradmin"
+            Write-Host "    Password : $rdpPass"
+            Write-Host ""
+            Write-Host "[*] Log playit terbaru:"
+            Get-Content $logFile -Tail 30 -ErrorAction SilentlyContinue
+          }
+
+      # ─────────────────────────────────────────
+      # 5. Keep-alive
+      # ─────────────────────────────────────────
+      - name: Keep Session Alive
+        shell: powershell
+        run: |
+          $inputDuration = "${{ github.event.inputs.rdp_duration }}"
+          $duration = [int]$inputDuration
+          if ($duration -lt 1 -or $duration -gt 350) {
+            $duration = 60
+          }
+
+          $endTime = (Get-Date).AddMinutes($duration)
+          $rdpAddress = $env:RDP_ADDRESS
+          $rdpPass = $env:RDP_PASS
+
+          Write-Host "[*] Sesi aktif selama $duration menit"
+          Write-Host "[*] Username : runneradmin"
+          Write-Host "[*] Password : $rdpPass"
+          if ($rdpAddress -ne "") {
+            Write-Host "[*] Alamat   : $rdpAddress"
+          } else {
+            Write-Host "[*] Cek alamat di dashboard playit.gg -> Tunnels"
+          }
           Write-Host ""
-          Write-Host "===================================================="
-          Write-Host "        INFORMASI KONEKSI RDP"
-          Write-Host "===================================================="
-          Write-Host "  Alamat RDP  : $rdpAddress"
-          Write-Host "  Host        : $rdpHost"
-          Write-Host "  Port        : $rdpPort"
-          Write-Host "  Username    : ilhamrunneradmin"
+
+          while ((Get-Date) -lt $endTime) {
+            $remaining = [math]::Round(($endTime - (Get-Date)).TotalMinutes, 1)
+            $now = Get-Date -Format "HH:mm:ss"
+            Write-Host "$now | Sisa: $remaining menit | User: runneradmin | Pass: $rdpPass"
+            Start-Sleep -Seconds 60
+          }
+
+          Write-Host "[!] Sesi selesai."
           Write-Host "  Password    : $rdpPass"
           Write-Host "===================================================="
           Write-Host "  Cara connect (Windows):"
