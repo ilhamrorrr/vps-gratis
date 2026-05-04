@@ -1,4 +1,4 @@
-name: Windows RDP Backtest via serveo.net
+name: Windows RDP via localhost.run
 
 on:
   workflow_dispatch:
@@ -37,7 +37,7 @@ jobs:
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "runneradmin" -ErrorAction SilentlyContinue
           Write-Host "[+] Remote Desktop aktif"
 
-      - name: Start serveo Tunnel
+      - name: Start localhost.run Tunnel
         shell: powershell
         run: |
           $sshDir = "$env:USERPROFILE\.ssh"
@@ -45,70 +45,64 @@ jobs:
           ssh-keygen -t rsa -b 2048 -f "$sshDir\id_rsa" -N '""' -q
           Write-Host "[+] SSH key dibuat"
 
-          # Coba beberapa port sampai ada yang berhasil
-          $ports = @(13389, 23389, 33389, 43389, 53389)
-          $logFile = "C:\serveo.log"
-          $errFile = "C:\serveo-err.log"
-          $successPort = ""
-          $proc = $null
+          $logFile = "C:\lhr.log"
+          $errFile = "C:\lhr-err.log"
+          New-Item -ItemType File -Force -Path $logFile | Out-Null
+          New-Item -ItemType File -Force -Path $errFile | Out-Null
 
-          foreach ($port in $ports) {
-            Write-Host "[*] Mencoba port $port..."
+          Write-Host "[*] Memulai tunnel ke localhost.run..."
 
-            New-Item -ItemType File -Force -Path $logFile | Out-Null
-            New-Item -ItemType File -Force -Path $errFile | Out-Null
+          $sshArgs = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -o ServerAliveInterval=20 -R 3389:localhost:3389 nokey@localhost.run"
+          Start-Process -FilePath "ssh" -ArgumentList $sshArgs -RedirectStandardOutput $logFile -RedirectStandardError $errFile -WindowStyle Hidden -PassThru
 
-            $sshArgs = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -o ServerAliveInterval=20 -o ExitOnForwardFailure=yes -T -R ${port}:localhost:3389 serveo.net"
+          Write-Host "[*] Menunggu tunnel aktif..."
 
-            if ($proc -ne $null) {
-              Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-            }
+          $maxWait = 40
+          $elapsed = 0
+          $tunnelInfo = ""
 
-            $proc = Start-Process -FilePath "ssh" -ArgumentList $sshArgs -RedirectStandardOutput $logFile -RedirectStandardError $errFile -WindowStyle Hidden -PassThru
-
-            Start-Sleep -Seconds 8
+          while ($elapsed -lt $maxWait) {
+            Start-Sleep -Seconds 2
+            $elapsed = $elapsed + 2
 
             $logContent = Get-Content $logFile -Raw -ErrorAction SilentlyContinue
             $errContent = Get-Content $errFile -Raw -ErrorAction SilentlyContinue
             $combined = "$logContent $errContent"
 
-            if ($combined -match "forwarding failed") {
-              Write-Host "  Port $port gagal, coba berikutnya..."
-              continue
-            }
-
-            if ($proc -ne $null -and -not $proc.HasExited) {
-              $successPort = $port
-              Write-Host "[+] Tunnel berhasil di port $port"
+            # localhost.run format: tunneled with tls termination, https://xxxxx.localhost.run
+            if ($combined -match "tunneled.*?([a-z0-9\-]+\.localhost\.run)") {
+              $tunnelInfo = $Matches[1]
               break
             }
+            if ($combined -match "([a-z0-9\-]+\.localhost\.run)") {
+              $tunnelInfo = $Matches[1]
+              break
+            }
+
+            Write-Host "menunggu tunnel... ($elapsed/$maxWait detik)"
           }
 
           $rdpPass = $env:RDP_PASS
 
-          if ($successPort -ne "") {
-            $rdpAddress = "serveo.net:$successPort"
-            echo "RDP_ADDRESS=$rdpAddress" >> $env:GITHUB_ENV
-            echo "RDP_PORT=$successPort" >> $env:GITHUB_ENV
-
+          if ($tunnelInfo -ne "") {
+            echo "TUNNEL_HOST=$tunnelInfo" >> $env:GITHUB_ENV
             Write-Host ""
             Write-Host "===================================================="
             Write-Host "        INFORMASI KONEKSI RDP"
             Write-Host "===================================================="
-            Write-Host "  Alamat RDP  : $rdpAddress"
-            Write-Host "  Host        : serveo.net"
-            Write-Host "  Port        : $successPort"
+            Write-Host "  Tunnel Host : $tunnelInfo"
+            Write-Host "  Port        : 3389"
             Write-Host "  Username    : runneradmin"
             Write-Host "  Password    : $rdpPass"
             Write-Host "===================================================="
             Write-Host "  Di Microsoft Remote Desktop:"
-            Write-Host "  PC Name  -> serveo.net:$successPort"
+            Write-Host "  PC Name  -> $tunnelInfo`:3389"
             Write-Host "  Username -> runneradmin"
             Write-Host "  Password -> $rdpPass"
             Write-Host "===================================================="
           } else {
             Write-Host ""
-            Write-Host "[!] Semua port gagal. Log terakhir:"
+            Write-Host "[!] Tunnel tidak terdeteksi. Log:"
             Get-Content $logFile -ErrorAction SilentlyContinue
             Get-Content $errFile -ErrorAction SilentlyContinue
             Write-Host ""
@@ -126,19 +120,20 @@ jobs:
           }
 
           $endTime = (Get-Date).AddMinutes($duration)
-          $rdpAddress = $env:RDP_ADDRESS
+          $tunnelHost = $env:TUNNEL_HOST
           $rdpPass = $env:RDP_PASS
 
           Write-Host "[*] Sesi aktif selama $duration menit"
           Write-Host "[*] Username : runneradmin"
           Write-Host "[*] Password : $rdpPass"
-          Write-Host "[*] Alamat   : $rdpAddress"
+          Write-Host "[*] Host     : $tunnelHost"
+          Write-Host "[*] Port     : 3389"
           Write-Host ""
 
           while ((Get-Date) -lt $endTime) {
             $remaining = [math]::Round(($endTime - (Get-Date)).TotalMinutes, 1)
             $now = Get-Date -Format "HH:mm:ss"
-            Write-Host "$now | Sisa: $remaining menit | $rdpAddress | Pass: $rdpPass"
+            Write-Host "$now | Sisa: $remaining menit | $tunnelHost`:3389 | Pass: $rdpPass"
             Start-Sleep -Seconds 60
           }
 
