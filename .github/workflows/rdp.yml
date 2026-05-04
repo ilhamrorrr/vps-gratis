@@ -1,4 +1,4 @@
-name: Windows RDP Backtest via bore.pub
+name: Windows RDP Backtest via serveo.net
 
 on:
   workflow_dispatch:
@@ -37,53 +37,34 @@ jobs:
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "runneradmin" -ErrorAction SilentlyContinue
           Write-Host "[+] Remote Desktop aktif"
 
-      - name: Install bore & Start RDP Tunnel
+      - name: Setup SSH Key & Start serveo Tunnel
         shell: powershell
         run: |
-          Write-Host "[*] Mengunduh bore..."
+          Write-Host "[*] Membuat SSH key..."
 
-          $boreUrl = "https://github.com/ekzhang/bore/releases/latest/download/bore-v0.5.0-x86_64-pc-windows-msvc.zip"
-          $zipPath = "$env:TEMP\bore.zip"
-          $destPath = "C:\bore"
+          $sshDir = "$env:USERPROFILE\.ssh"
+          New-Item -ItemType Directory -Force -Path $sshDir | Out-Null
 
-          New-Item -ItemType Directory -Force -Path $destPath | Out-Null
+          # Generate SSH key tanpa passphrase
+          ssh-keygen -t rsa -b 2048 -f "$sshDir\id_rsa" -N '""' -q
 
-          try {
-            Invoke-WebRequest -Uri $boreUrl -OutFile $zipPath -UseBasicParsing
-            Expand-Archive -Path $zipPath -DestinationPath $destPath -Force
-            Write-Host "[+] bore berhasil diinstall"
-          } catch {
-            Write-Host "[!] Download bore gagal, mencoba URL alternatif..."
-            $boreUrl2 = "https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-pc-windows-msvc.zip"
-            Invoke-WebRequest -Uri $boreUrl2 -OutFile $zipPath -UseBasicParsing
-            Expand-Archive -Path $zipPath -DestinationPath $destPath -Force
-            Write-Host "[+] bore berhasil diinstall (URL alternatif)"
-          }
+          # Disable strict host checking
+          $sshConfig = "Host serveo.net`n  StrictHostKeyChecking no`n  UserKnownHostsFile /dev/null`n  ServerAliveInterval 30`n  ServerAliveCountMax 10`n"
+          $sshConfig | Out-File -FilePath "$sshDir\config" -Encoding ascii
 
-          $boreExe = Get-ChildItem -Path $destPath -Filter "bore.exe" -Recurse | Select-Object -First 1
-          if ($null -eq $boreExe) {
-            Write-Error "[!] bore.exe tidak ditemukan setelah extract"
-            Get-ChildItem $destPath
-            exit 1
-          }
+          Write-Host "[+] SSH key berhasil dibuat"
+          Write-Host "[*] Memulai tunnel ke serveo.net..."
 
-          $borePath = $boreExe.FullName
-          Write-Host "[+] bore.exe ditemukan: $borePath"
-
-          $logFile = "C:\bore\bore.log"
+          $logFile = "C:\serveo.log"
           New-Item -ItemType File -Force -Path $logFile | Out-Null
 
-          Write-Host "[*] Memulai tunnel RDP ke bore.pub..."
-
-          Start-Process -FilePath $borePath `
-            -ArgumentList "local 3389 --to bore.pub" `
-            -RedirectStandardOutput $logFile `
-            -RedirectStandardError "C:\bore\bore-err.log" `
-            -WindowStyle Hidden
+          # Jalankan SSH tunnel ke serveo.net port 3389
+          $sshArgs = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=30 -R 0:localhost:3389 serveo.net"
+          Start-Process -FilePath "ssh" -ArgumentList $sshArgs -RedirectStandardOutput $logFile -RedirectStandardError "C:\serveo-err.log" -WindowStyle Hidden
 
           Write-Host "[*] Menunggu tunnel aktif..."
 
-          $maxWait = 30
+          $maxWait = 40
           $elapsed = 0
           $port = ""
 
@@ -92,29 +73,25 @@ jobs:
             $elapsed = $elapsed + 2
 
             $logContent = Get-Content $logFile -Raw -ErrorAction SilentlyContinue
-            $errContent = Get-Content "C:\bore\bore-err.log" -Raw -ErrorAction SilentlyContinue
+            $errContent = Get-Content "C:\serveo-err.log" -Raw -ErrorAction SilentlyContinue
             $combined = "$logContent $errContent"
 
-            if ($combined -match "listening at bore\.pub:(\d+)") {
+            if ($combined -match "Allocated port (\d+)") {
               $port = $Matches[1]
               break
             }
-            if ($combined -match "bore\.pub:(\d+)") {
-              $port = $Matches[1]
-              break
-            }
-            if ($combined -match "remote_port.*?(\d{4,5})") {
+            if ($combined -match "forwarding.*?(\d{4,5})") {
               $port = $Matches[1]
               break
             }
 
-            Write-Host "menunggu tunnel... ($elapsed/$maxWait detik)"
+            Write-Host "menunggu tunnel serveo... ($elapsed/$maxWait detik)"
           }
 
           $rdpPass = $env:RDP_PASS
 
           if ($port -ne "") {
-            $rdpAddress = "bore.pub:$port"
+            $rdpAddress = "serveo.net:$port"
             echo "RDP_ADDRESS=$rdpAddress" >> $env:GITHUB_ENV
             echo "RDP_PORT=$port" >> $env:GITHUB_ENV
 
@@ -123,22 +100,21 @@ jobs:
             Write-Host "        INFORMASI KONEKSI RDP"
             Write-Host "===================================================="
             Write-Host "  Alamat RDP  : $rdpAddress"
-            Write-Host "  Host        : bore.pub"
+            Write-Host "  Host        : serveo.net"
             Write-Host "  Port        : $port"
             Write-Host "  Username    : runneradmin"
             Write-Host "  Password    : $rdpPass"
             Write-Host "===================================================="
-            Write-Host "  Cara connect di Android (RD Client / Microsoft RD):"
-            Write-Host "  1. Install 'Microsoft Remote Desktop' dari PlayStore"
-            Write-Host "  2. Add PC -> PC name: bore.pub:$port"
-            Write-Host "  3. Username: runneradmin"
-            Write-Host "  4. Password: $rdpPass"
+            Write-Host "  Di Microsoft Remote Desktop:"
+            Write-Host "  PC Name  -> serveo.net:$port"
+            Write-Host "  Username -> runneradmin"
+            Write-Host "  Password -> $rdpPass"
             Write-Host "===================================================="
           } else {
             Write-Host ""
-            Write-Host "[!] Port tidak terdeteksi otomatis. Log bore:"
+            Write-Host "[!] Port tidak terdeteksi. Log serveo:"
             Get-Content $logFile -ErrorAction SilentlyContinue
-            Get-Content "C:\bore\bore-err.log" -ErrorAction SilentlyContinue
+            Get-Content "C:\serveo-err.log" -ErrorAction SilentlyContinue
             Write-Host ""
             Write-Host "  Username : runneradmin"
             Write-Host "  Password : $rdpPass"
@@ -157,7 +133,7 @@ jobs:
           $rdpAddress = $env:RDP_ADDRESS
           $rdpPass = $env:RDP_PASS
 
-          Write-Host "[*] Sesi aktif selama $duration menit (backtest mode)"
+          Write-Host "[*] Sesi aktif selama $duration menit"
           Write-Host "[*] Username : runneradmin"
           Write-Host "[*] Password : $rdpPass"
           Write-Host "[*] Alamat   : $rdpAddress"
