@@ -1,12 +1,12 @@
-name: Windows RDP via playit.gg
+name: Windows RDP Backtest via bore.pub
 
 on:
   workflow_dispatch:
     inputs:
       rdp_duration:
-        description: 'Durasi sesi RDP dalam menit (max 350)'
+        description: 'Durasi sesi dalam menit (max 350)'
         required: false
-        default: '60'
+        default: '350'
 
 jobs:
   rdp:
@@ -15,10 +15,7 @@ jobs:
 
     steps:
 
-      # ─────────────────────────────────────────
-      # 1. Generate password acak untuk runneradmin
-      # ─────────────────────────────────────────
-      - name: Generate & Set Password for runneradmin
+      - name: Generate & Set Password
         shell: powershell
         run: |
           $chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
@@ -31,9 +28,6 @@ jobs:
           Write-Host "[+] Password : $password"
           Write-Host "=========================================="
 
-      # ─────────────────────────────────────────
-      # 2. Aktifkan RDP
-      # ─────────────────────────────────────────
       - name: Enable Remote Desktop
         shell: powershell
         run: |
@@ -41,220 +35,139 @@ jobs:
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "runneradmin" -ErrorAction SilentlyContinue
-          Write-Host "[+] Remote Desktop telah diaktifkan"
+          Write-Host "[+] Remote Desktop aktif"
 
-      # ─────────────────────────────────────────
-      # 3. Download & jalankan playit agent
-      #    Agent akan print claim URL di log
-      #    Buka URL tsb di browser lalu klik Approve
-      # ─────────────────────────────────────────
-      - name: Download playit Agent
+      - name: Install bore & Start RDP Tunnel
         shell: powershell
         run: |
-          $url = "https://github.com/playit-cloud/playit-agent/releases/latest/download/playit-windows-x86_64.exe"
-          $dest = "C:\playit\playit.exe"
-          New-Item -ItemType Directory -Force -Path "C:\playit" | Out-Null
-          Write-Host "[*] Mengunduh playit agent..."
-          Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing
-          Write-Host "[+] playit agent berhasil didownload"
+          Write-Host "[*] Mengunduh bore..."
 
-      - name: Start playit Tunnel & Show Claim URL
-        shell: powershell
-        run: |
-          $logFile = "C:\playit\playit.log"
+          $boreUrl = "https://github.com/ekzhang/bore/releases/latest/download/bore-v0.5.0-x86_64-pc-windows-msvc.zip"
+          $zipPath = "$env:TEMP\bore.zip"
+          $destPath = "C:\bore"
+
+          New-Item -ItemType Directory -Force -Path $destPath | Out-Null
+
+          try {
+            Invoke-WebRequest -Uri $boreUrl -OutFile $zipPath -UseBasicParsing
+            Expand-Archive -Path $zipPath -DestinationPath $destPath -Force
+            Write-Host "[+] bore berhasil diinstall"
+          } catch {
+            Write-Host "[!] Download bore gagal, mencoba URL alternatif..."
+            $boreUrl2 = "https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-pc-windows-msvc.zip"
+            Invoke-WebRequest -Uri $boreUrl2 -OutFile $zipPath -UseBasicParsing
+            Expand-Archive -Path $zipPath -DestinationPath $destPath -Force
+            Write-Host "[+] bore berhasil diinstall (URL alternatif)"
+          }
+
+          $boreExe = Get-ChildItem -Path $destPath -Filter "bore.exe" -Recurse | Select-Object -First 1
+          if ($null -eq $boreExe) {
+            Write-Error "[!] bore.exe tidak ditemukan setelah extract"
+            Get-ChildItem $destPath
+            exit 1
+          }
+
+          $borePath = $boreExe.FullName
+          Write-Host "[+] bore.exe ditemukan: $borePath"
+
+          $logFile = "C:\bore\bore.log"
           New-Item -ItemType File -Force -Path $logFile | Out-Null
 
-          Write-Host "[*] Menjalankan playit agent..."
+          Write-Host "[*] Memulai tunnel RDP ke bore.pub..."
 
-          $proc = Start-Process -FilePath "C:\playit\playit.exe" `
+          Start-Process -FilePath $borePath `
+            -ArgumentList "local 3389 --to bore.pub" `
             -RedirectStandardOutput $logFile `
-            -RedirectStandardError "C:\playit\playit-err.log" `
-            -PassThru -WindowStyle Hidden
+            -RedirectStandardError "C:\bore\bore-err.log" `
+            -WindowStyle Hidden
 
-          Write-Host "[*] playit PID: $($proc.Id)"
-          Write-Host "[*] Menunggu claim URL muncul di log..."
-          Write-Host ""
+          Write-Host "[*] Menunggu tunnel aktif..."
 
-          $maxWait = 60
+          $maxWait = 30
           $elapsed = 0
-          $claimUrl = ""
+          $port = ""
 
           while ($elapsed -lt $maxWait) {
             Start-Sleep -Seconds 2
             $elapsed = $elapsed + 2
 
-            if (Test-Path $logFile) {
-              $content = Get-Content $logFile -Raw -ErrorAction SilentlyContinue
-              if ($content -match "(https://playit\.gg/claim/[A-Za-z0-9_-]+)") {
-                $claimUrl = $Matches[1]
-                break
-              }
-              if ($content -match "(https://playit\.gg/[A-Za-z0-9/_-]+claim[A-Za-z0-9/_-]*)") {
-                $claimUrl = $Matches[1]
-                break
-              }
+            $logContent = Get-Content $logFile -Raw -ErrorAction SilentlyContinue
+            $errContent = Get-Content "C:\bore\bore-err.log" -Raw -ErrorAction SilentlyContinue
+            $combined = "$logContent $errContent"
+
+            if ($combined -match "listening at bore\.pub:(\d+)") {
+              $port = $Matches[1]
+              break
+            }
+            if ($combined -match "bore\.pub:(\d+)") {
+              $port = $Matches[1]
+              break
+            }
+            if ($combined -match "remote_port.*?(\d{4,5})") {
+              $port = $Matches[1]
+              break
             }
 
-            Write-Host "menunggu claim URL... ($elapsed/$maxWait detik)"
-          }
-
-          if ($claimUrl -eq "") {
-            Write-Host ""
-            Write-Host "[!] Claim URL tidak ditemukan. Isi log playit:"
-            Get-Content $logFile -ErrorAction SilentlyContinue
-            Get-Content "C:\playit\playit-err.log" -ErrorAction SilentlyContinue
-          } else {
-            Write-Host ""
-            Write-Host "===================================================="
-            Write-Host "  BUKA URL INI DI BROWSER UNTUK APPROVE TUNNEL:"
-            Write-Host ""
-            Write-Host "  $claimUrl"
-            Write-Host ""
-            Write-Host "  Setelah approve, tunnel RDP akan aktif."
-            Write-Host "  Lihat step berikutnya untuk alamat RDP."
-            Write-Host "===================================================="
-            echo "PLAYIT_CLAIM_URL=$claimUrl" >> $env:GITHUB_ENV
-          }
-
-      # ─────────────────────────────────────────
-      # 4. Tunggu tunnel aktif lalu tampilkan alamat RDP
-      #    Setelah kamu approve di browser,
-      #    playit akan assign alamat TCP
-      # ─────────────────────────────────────────
-      - name: Wait for Tunnel Approval & Show RDP Address
-        shell: powershell
-        run: |
-          Write-Host "[*] Menunggu kamu approve tunnel di browser..."
-          Write-Host "[*] Buka URL ini jika belum: $env:PLAYIT_CLAIM_URL"
-          Write-Host ""
-
-          $logFile = "C:\playit\playit.log"
-          $maxWait = 120
-          $elapsed = 0
-          $rdpAddress = ""
-
-          while ($elapsed -lt $maxWait) {
-            Start-Sleep -Seconds 3
-            $elapsed = $elapsed + 3
-
-            if (Test-Path $logFile) {
-              $content = Get-Content $logFile -Raw -ErrorAction SilentlyContinue
-
-              # Cari pola alamat TCP dari playit (format: X.auto.playit.gg:PORT atau IP:PORT)
-              if ($content -match "(\d+\.\d+\.\d+\.\d+:\d+)") {
-                $rdpAddress = $Matches[1]
-                break
-              }
-              if ($content -match "([a-z0-9\-]+\.auto\.playit\.gg:\d+)") {
-                $rdpAddress = $Matches[1]
-                break
-              }
-              if ($content -match "tunnel.*?([a-z0-9\-\.]+:\d{4,5})") {
-                $rdpAddress = $Matches[1]
-                break
-              }
-            }
-
-            $remaining = $maxWait - $elapsed
-            Write-Host "menunggu approval... sisa $remaining detik"
+            Write-Host "menunggu tunnel... ($elapsed/$maxWait detik)"
           }
 
           $rdpPass = $env:RDP_PASS
 
-          if ($rdpAddress -ne "") {
+          if ($port -ne "") {
+            $rdpAddress = "bore.pub:$port"
             echo "RDP_ADDRESS=$rdpAddress" >> $env:GITHUB_ENV
+            echo "RDP_PORT=$port" >> $env:GITHUB_ENV
+
             Write-Host ""
             Write-Host "===================================================="
             Write-Host "        INFORMASI KONEKSI RDP"
             Write-Host "===================================================="
             Write-Host "  Alamat RDP  : $rdpAddress"
+            Write-Host "  Host        : bore.pub"
+            Write-Host "  Port        : $port"
             Write-Host "  Username    : runneradmin"
             Write-Host "  Password    : $rdpPass"
             Write-Host "===================================================="
-            Write-Host "  Cara connect:"
-            Write-Host "  1. Win+R -> ketik: mstsc"
-            Write-Host "  2. Computer: $rdpAddress"
-            Write-Host "  3. Klik Connect -> masukkan kredensial"
+            Write-Host "  Cara connect di Android (RD Client / Microsoft RD):"
+            Write-Host "  1. Install 'Microsoft Remote Desktop' dari PlayStore"
+            Write-Host "  2. Add PC -> PC name: bore.pub:$port"
+            Write-Host "  3. Username: runneradmin"
+            Write-Host "  4. Password: $rdpPass"
             Write-Host "===================================================="
           } else {
             Write-Host ""
-            Write-Host "[!] Alamat RDP belum terdeteksi otomatis."
-            Write-Host "    Cek dashboard playit.gg -> Tunnels"
-            Write-Host "    Username : runneradmin"
-            Write-Host "    Password : $rdpPass"
+            Write-Host "[!] Port tidak terdeteksi otomatis. Log bore:"
+            Get-Content $logFile -ErrorAction SilentlyContinue
+            Get-Content "C:\bore\bore-err.log" -ErrorAction SilentlyContinue
             Write-Host ""
-            Write-Host "[*] Log playit terbaru:"
-            Get-Content $logFile -Tail 30 -ErrorAction SilentlyContinue
+            Write-Host "  Username : runneradmin"
+            Write-Host "  Password : $rdpPass"
           }
 
-      # ─────────────────────────────────────────
-      # 5. Keep-alive
-      # ─────────────────────────────────────────
       - name: Keep Session Alive
         shell: powershell
         run: |
           $inputDuration = "${{ github.event.inputs.rdp_duration }}"
           $duration = [int]$inputDuration
           if ($duration -lt 1 -or $duration -gt 350) {
-            $duration = 60
+            $duration = 350
           }
 
           $endTime = (Get-Date).AddMinutes($duration)
           $rdpAddress = $env:RDP_ADDRESS
           $rdpPass = $env:RDP_PASS
 
-          Write-Host "[*] Sesi aktif selama $duration menit"
+          Write-Host "[*] Sesi aktif selama $duration menit (backtest mode)"
           Write-Host "[*] Username : runneradmin"
           Write-Host "[*] Password : $rdpPass"
-          if ($rdpAddress -ne "") {
-            Write-Host "[*] Alamat   : $rdpAddress"
-          } else {
-            Write-Host "[*] Cek alamat di dashboard playit.gg -> Tunnels"
-          }
+          Write-Host "[*] Alamat   : $rdpAddress"
           Write-Host ""
 
           while ((Get-Date) -lt $endTime) {
             $remaining = [math]::Round(($endTime - (Get-Date)).TotalMinutes, 1)
             $now = Get-Date -Format "HH:mm:ss"
-            Write-Host "$now | Sisa: $remaining menit | User: runneradmin | Pass: $rdpPass"
+            Write-Host "$now | Sisa: $remaining menit | $rdpAddress | Pass: $rdpPass"
             Start-Sleep -Seconds 60
           }
 
           Write-Host "[!] Sesi selesai."
-          Write-Host "  Password    : $rdpPass"
-          Write-Host "===================================================="
-          Write-Host "  Cara connect (Windows):"
-          Write-Host "  1. Win+R -> ketik: mstsc"
-          Write-Host "  2. Computer: $rdpAddress"
-          Write-Host "  3. Klik Connect -> masukkan kredensial di atas"
-          Write-Host "===================================================="
-          Write-Host ""
-
-          echo "RDP_ADDRESS=$rdpAddress" >> $env:GITHUB_ENV
-
-      - name: Keep Session Alive
-        shell: powershell
-        run: |
-          $inputDuration = "${{ github.event.inputs.rdp_duration }}"
-          $duration = [int]$inputDuration
-          if ($duration -lt 1 -or $duration -gt 350) {
-            $duration = 60
-          }
-
-          $endTime = (Get-Date).AddMinutes($duration)
-          $rdpAddress = $env:RDP_ADDRESS
-
-          Write-Host "[*] Sesi RDP akan aktif selama $duration menit"
-          Write-Host "[*] Akan berakhir pada: $endTime"
-          Write-Host "[*] Alamat RDP: $rdpAddress"
-          Write-Host ""
-
-          while ((Get-Date) -lt $endTime) {
-            $remaining = [math]::Round(($endTime - (Get-Date)).TotalMinutes, 1)
-            $now = Get-Date -Format "HH:mm:ss"
-            Write-Host "$now | Sisa waktu: $remaining menit | RDP: $rdpAddress"
-            Start-Sleep -Seconds 60
-          }
-
-          Write-Host ""
-          Write-Host "[!] Sesi RDP telah berakhir."
