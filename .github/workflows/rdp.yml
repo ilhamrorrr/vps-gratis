@@ -1,21 +1,24 @@
-name: Windows RDP via localhost.run
+name: Windows Desktop via Browser (noVNC)
 
 on:
   workflow_dispatch:
     inputs:
-      rdp_duration:
+      ngrok_token:
+        description: 'Ngrok Authtoken (dari ngrok.com, GRATIS no kartu)'
+        required: true
+      session_duration:
         description: 'Durasi sesi dalam menit (max 350)'
         required: false
         default: '350'
 
 jobs:
-  rdp:
+  desktop:
     runs-on: windows-latest
     timeout-minutes: 360
 
     steps:
 
-      - name: Generate & Set Password
+      - name: Generate Password
         shell: powershell
         run: |
           $chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
@@ -35,77 +38,141 @@ jobs:
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "runneradmin" -ErrorAction SilentlyContinue
-          Write-Host "[+] Remote Desktop aktif"
+          Write-Host "[+] RDP aktif"
 
-      - name: Start localhost.run Tunnel
+      - name: Install noVNC + TigerVNC
         shell: powershell
         run: |
-          $sshDir = "$env:USERPROFILE\.ssh"
-          New-Item -ItemType Directory -Force -Path $sshDir | Out-Null
-          ssh-keygen -t rsa -b 2048 -f "$sshDir\id_rsa" -N '""' -q
-          Write-Host "[+] SSH key dibuat"
+          Write-Host "[*] Menginstall Chocolatey..."
+          Set-ExecutionPolicy Bypass -Scope Process -Force
+          [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+          Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
 
-          $logFile = "C:\lhr.log"
-          $errFile = "C:\lhr-err.log"
-          New-Item -ItemType File -Force -Path $logFile | Out-Null
-          New-Item -ItemType File -Force -Path $errFile | Out-Null
+          Write-Host "[*] Menginstall TigerVNC..."
+          choco install -y tigervnc
 
-          Write-Host "[*] Memulai tunnel ke localhost.run..."
+          Write-Host "[*] Menginstall Node.js..."
+          choco install -y nodejs
 
-          $sshArgs = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -o ServerAliveInterval=20 -R 3389:localhost:3389 nokey@localhost.run"
-          Start-Process -FilePath "ssh" -ArgumentList $sshArgs -RedirectStandardOutput $logFile -RedirectStandardError $errFile -WindowStyle Hidden -PassThru
+          Write-Host "[*] Menginstall noVNC via npm..."
+          npm install -g novnc 2>$null
 
-          Write-Host "[*] Menunggu tunnel aktif..."
+          # Download noVNC langsung jika npm gagal
+          $noVNCPath = "C:\noVNC"
+          if (-not (Test-Path $noVNCPath)) {
+            Write-Host "[*] Download noVNC dari GitHub..."
+            $noVNCUrl = "https://github.com/novnc/noVNC/archive/refs/heads/master.zip"
+            Invoke-WebRequest -Uri $noVNCUrl -OutFile "$env:TEMP\novnc.zip" -UseBasicParsing
+            Expand-Archive -Path "$env:TEMP\novnc.zip" -DestinationPath "C:\" -Force
+            Rename-Item "C:\noVNC-master" "C:\noVNC" -ErrorAction SilentlyContinue
+          }
 
-          $maxWait = 40
+          Write-Host "[+] noVNC siap"
+
+      - name: Start VNC Server
+        shell: powershell
+        run: |
+          Write-Host "[*] Setup VNC password..."
+          $vncPass = "vncpass1"
+          $vncDir = "$env:APPDATA\TigerVNC"
+          New-Item -ItemType Directory -Force -Path $vncDir | Out-Null
+
+          # Set VNC password
+          $vncPassFile = "$vncDir\passwd"
+          & "C:\Program Files\TigerVNC\vncpasswd.exe" -f | Set-Content $vncPassFile -ErrorAction SilentlyContinue
+
+          echo "VNC_PASS=$vncPass" >> $env:GITHUB_ENV
+
+          Write-Host "[*] Memulai VNC server..."
+          Start-Process -FilePath "C:\Program Files\TigerVNC\winvnc4.exe" -ArgumentList "-SecurityTypes VncAuth -rfbauth $vncPassFile" -WindowStyle Hidden -ErrorAction SilentlyContinue
+
+          # Alternatif: gunakan built-in Windows VNC via RDP reflection
+          Start-Sleep -Seconds 3
+          Write-Host "[+] VNC server dimulai"
+
+      - name: Start websockify + noVNC
+        shell: powershell
+        run: |
+          Write-Host "[*] Mencari websockify/noVNC..."
+
+          # Install websockify via pip
+          pip install websockify 2>$null
+
+          $noVNCDir = "C:\noVNC"
+          if (-not (Test-Path $noVNCDir)) {
+            Write-Host "[*] Re-download noVNC..."
+            $noVNCUrl = "https://github.com/novnc/noVNC/archive/refs/heads/master.zip"
+            Invoke-WebRequest -Uri $noVNCUrl -OutFile "$env:TEMP\novnc.zip" -UseBasicParsing
+            Expand-Archive -Path "$env:TEMP\novnc.zip" -DestinationPath "C:\" -Force
+            Rename-Item "C:\noVNC-master" "C:\noVNC" -ErrorAction SilentlyContinue
+          }
+
+          Write-Host "[*] Memulai websockify di port 6080..."
+          Start-Process -FilePath "python" -ArgumentList "-m websockify --web C:\noVNC 6080 localhost:5900" -WindowStyle Hidden
+
+          Start-Sleep -Seconds 5
+          Write-Host "[+] noVNC web server aktif di port 6080"
+
+      - name: Install & Start Ngrok HTTP Tunnel
+        shell: powershell
+        run: |
+          $token = "${{ github.event.inputs.ngrok_token }}"
+
+          Write-Host "[*] Download Ngrok..."
+          $ngrokUrl = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip"
+          Invoke-WebRequest -Uri $ngrokUrl -OutFile "$env:TEMP\ngrok.zip" -UseBasicParsing
+          New-Item -ItemType Directory -Force -Path "C:\ngrok" | Out-Null
+          Expand-Archive -Path "$env:TEMP\ngrok.zip" -DestinationPath "C:\ngrok" -Force
+
+          C:\ngrok\ngrok.exe config add-authtoken $token
+
+          Write-Host "[*] Memulai Ngrok HTTP tunnel ke port 6080..."
+          Start-Process -FilePath "C:\ngrok\ngrok.exe" -ArgumentList "http 6080" -WindowStyle Hidden
+
+          Start-Sleep -Seconds 5
+
+          # Ambil URL dari API Ngrok
+          $maxWait = 30
           $elapsed = 0
-          $tunnelInfo = ""
+          $ngrokUrl = ""
 
           while ($elapsed -lt $maxWait) {
             Start-Sleep -Seconds 2
             $elapsed = $elapsed + 2
-
-            $logContent = Get-Content $logFile -Raw -ErrorAction SilentlyContinue
-            $errContent = Get-Content $errFile -Raw -ErrorAction SilentlyContinue
-            $combined = "$logContent $errContent"
-
-            # localhost.run format: tunneled with tls termination, https://xxxxx.localhost.run
-            if ($combined -match "tunneled.*?([a-z0-9\-]+\.localhost\.run)") {
-              $tunnelInfo = $Matches[1]
-              break
+            try {
+              $resp = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels" -ErrorAction Stop
+              if ($resp.tunnels.Count -gt 0) {
+                $ngrokUrl = $resp.tunnels[0].public_url
+                break
+              }
+            } catch {
+              Write-Host "menunggu Ngrok... ($elapsed/$maxWait detik)"
             }
-            if ($combined -match "([a-z0-9\-]+\.localhost\.run)") {
-              $tunnelInfo = $Matches[1]
-              break
-            }
-
-            Write-Host "menunggu tunnel... ($elapsed/$maxWait detik)"
           }
 
           $rdpPass = $env:RDP_PASS
 
-          if ($tunnelInfo -ne "") {
-            echo "TUNNEL_HOST=$tunnelInfo" >> $env:GITHUB_ENV
+          if ($ngrokUrl -ne "") {
+            $browserUrl = "$ngrokUrl/vnc.html?autoconnect=true"
+            echo "BROWSER_URL=$browserUrl" >> $env:GITHUB_ENV
+
             Write-Host ""
             Write-Host "===================================================="
-            Write-Host "        INFORMASI KONEKSI RDP"
+            Write-Host "   AKSES WINDOWS DARI BROWSER HP KAMU!"
             Write-Host "===================================================="
-            Write-Host "  Tunnel Host : $tunnelInfo"
-            Write-Host "  Port        : 3389"
-            Write-Host "  Username    : runneradmin"
-            Write-Host "  Password    : $rdpPass"
+            Write-Host "  Buka URL ini di browser HP:"
+            Write-Host ""
+            Write-Host "  $browserUrl"
+            Write-Host ""
+            Write-Host "  VNC Password : vncpass1"
+            Write-Host "  (masukkan saat diminta di browser)"
             Write-Host "===================================================="
-            Write-Host "  Di Microsoft Remote Desktop:"
-            Write-Host "  PC Name  -> $tunnelInfo`:3389"
-            Write-Host "  Username -> runneradmin"
-            Write-Host "  Password -> $rdpPass"
+            Write-Host "  Info tambahan:"
+            Write-Host "  Username RDP : runneradmin"
+            Write-Host "  Password RDP : $rdpPass"
             Write-Host "===================================================="
           } else {
-            Write-Host ""
-            Write-Host "[!] Tunnel tidak terdeteksi. Log:"
-            Get-Content $logFile -ErrorAction SilentlyContinue
-            Get-Content $errFile -ErrorAction SilentlyContinue
-            Write-Host ""
+            Write-Host "[!] Ngrok URL tidak terdeteksi"
             Write-Host "  Username : runneradmin"
             Write-Host "  Password : $rdpPass"
           }
@@ -114,26 +181,25 @@ jobs:
         shell: powershell
         run: |
           $inputDuration = "${{ github.event.inputs.rdp_duration }}"
-          $duration = [int]$inputDuration
-          if ($duration -lt 1 -or $duration -gt 350) {
-            $duration = 350
+          if ([string]::IsNullOrWhiteSpace($inputDuration)) {
+            $inputDuration = "${{ github.event.inputs.session_duration }}"
           }
+          $duration = 350
+          try { $duration = [int]$inputDuration } catch {}
+          if ($duration -lt 1 -or $duration -gt 350) { $duration = 350 }
 
           $endTime = (Get-Date).AddMinutes($duration)
-          $tunnelHost = $env:TUNNEL_HOST
+          $browserUrl = $env:BROWSER_URL
           $rdpPass = $env:RDP_PASS
 
           Write-Host "[*] Sesi aktif selama $duration menit"
-          Write-Host "[*] Username : runneradmin"
-          Write-Host "[*] Password : $rdpPass"
-          Write-Host "[*] Host     : $tunnelHost"
-          Write-Host "[*] Port     : 3389"
+          Write-Host "[*] Buka di browser: $browserUrl"
           Write-Host ""
 
           while ((Get-Date) -lt $endTime) {
             $remaining = [math]::Round(($endTime - (Get-Date)).TotalMinutes, 1)
             $now = Get-Date -Format "HH:mm:ss"
-            Write-Host "$now | Sisa: $remaining menit | $tunnelHost`:3389 | Pass: $rdpPass"
+            Write-Host "$now | Sisa: $remaining menit | URL: $browserUrl"
             Start-Sleep -Seconds 60
           }
 
