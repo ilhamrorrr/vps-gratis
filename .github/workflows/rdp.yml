@@ -1,13 +1,13 @@
-name: Windows Desktop via Browser (noVNC)
+name: Windows Desktop via Browser (Guacamole)
 
 on:
   workflow_dispatch:
     inputs:
       ngrok_token:
-        description: 'Ngrok Authtoken (dari ngrok.com, GRATIS no kartu)'
+        description: 'Ngrok Authtoken (ngrok.com - GRATIS, no kartu)'
         required: true
       session_duration:
-        description: 'Durasi sesi dalam menit (max 350)'
+        description: 'Durasi sesi menit (max 350)'
         required: false
         default: '350'
 
@@ -18,7 +18,7 @@ jobs:
 
     steps:
 
-      - name: Generate Password
+      - name: Set Password
         shell: powershell
         run: |
           $chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
@@ -31,110 +31,81 @@ jobs:
           Write-Host "[+] Password : $password"
           Write-Host "=========================================="
 
-      - name: Enable Remote Desktop
+      - name: Enable RDP
         shell: powershell
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "runneradmin" -ErrorAction SilentlyContinue
-          Write-Host "[+] RDP aktif"
+          Write-Host "[+] RDP aktif di port 3389"
 
-      - name: Install noVNC + TigerVNC
+      - name: Install Docker Desktop
         shell: powershell
         run: |
-          Write-Host "[*] Menginstall Chocolatey..."
-          Set-ExecutionPolicy Bypass -Scope Process -Force
-          [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
-          Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+          Write-Host "[*] Enable WSL2 + Hyper-V..."
+          Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux -NoRestart -ErrorAction SilentlyContinue
+          Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -NoRestart -ErrorAction SilentlyContinue
 
-          Write-Host "[*] Menginstall TigerVNC..."
-          choco install -y tigervnc
+          Write-Host "[*] Install Docker via choco..."
+          choco install -y docker-desktop --no-progress 2>$null
 
-          Write-Host "[*] Menginstall Node.js..."
-          choco install -y nodejs
-
-          Write-Host "[*] Menginstall noVNC via npm..."
-          npm install -g novnc 2>$null
-
-          # Download noVNC langsung jika npm gagal
-          $noVNCPath = "C:\noVNC"
-          if (-not (Test-Path $noVNCPath)) {
-            Write-Host "[*] Download noVNC dari GitHub..."
-            $noVNCUrl = "https://github.com/novnc/noVNC/archive/refs/heads/master.zip"
-            Invoke-WebRequest -Uri $noVNCUrl -OutFile "$env:TEMP\novnc.zip" -UseBasicParsing
-            Expand-Archive -Path "$env:TEMP\novnc.zip" -DestinationPath "C:\" -Force
-            Rename-Item "C:\noVNC-master" "C:\noVNC" -ErrorAction SilentlyContinue
+          # Cek docker
+          $dockerPath = "C:\Program Files\Docker\Docker\Docker Desktop.exe"
+          if (Test-Path $dockerPath) {
+            Write-Host "[+] Docker Desktop terinstall"
+          } else {
+            Write-Host "[!] Docker Desktop tidak ditemukan, coba install docker engine..."
+            choco install -y docker-engine --no-progress 2>$null
           }
 
-          Write-Host "[+] noVNC siap"
-
-      - name: Start VNC Server
+      - name: Run Guacamole via Docker
         shell: powershell
         run: |
-          Write-Host "[*] Setup VNC password..."
-          $vncPass = "vncpass1"
-          $vncDir = "$env:APPDATA\TigerVNC"
-          New-Item -ItemType Directory -Force -Path $vncDir | Out-Null
+          Write-Host "[*] Memulai Docker..."
+          Start-Service docker -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 10
 
-          # Set VNC password
-          $vncPassFile = "$vncDir\passwd"
-          & "C:\Program Files\TigerVNC\vncpasswd.exe" -f | Set-Content $vncPassFile -ErrorAction SilentlyContinue
+          $rdpPass = $env:RDP_PASS
+          $rdpHost = "host.docker.internal"
 
-          echo "VNC_PASS=$vncPass" >> $env:GITHUB_ENV
+          Write-Host "[*] Menjalankan Guacamole container..."
 
-          Write-Host "[*] Memulai VNC server..."
-          Start-Process -FilePath "C:\Program Files\TigerVNC\winvnc4.exe" -ArgumentList "-SecurityTypes VncAuth -rfbauth $vncPassFile" -WindowStyle Hidden -ErrorAction SilentlyContinue
+          # Jalankan guacamole all-in-one
+          docker run -d --name guacamole -p 8080:8080 `
+            -e GUACD_HOSTNAME=localhost `
+            -e POSTGRES_HOSTNAME=localhost `
+            oznu/guacamole 2>$null
 
-          # Alternatif: gunakan built-in Windows VNC via RDP reflection
-          Start-Sleep -Seconds 3
-          Write-Host "[+] VNC server dimulai"
-
-      - name: Start websockify + noVNC
-        shell: powershell
-        run: |
-          Write-Host "[*] Mencari websockify/noVNC..."
-
-          # Install websockify via pip
-          pip install websockify 2>$null
-
-          $noVNCDir = "C:\noVNC"
-          if (-not (Test-Path $noVNCDir)) {
-            Write-Host "[*] Re-download noVNC..."
-            $noVNCUrl = "https://github.com/novnc/noVNC/archive/refs/heads/master.zip"
-            Invoke-WebRequest -Uri $noVNCUrl -OutFile "$env:TEMP\novnc.zip" -UseBasicParsing
-            Expand-Archive -Path "$env:TEMP\novnc.zip" -DestinationPath "C:\" -Force
-            Rename-Item "C:\noVNC-master" "C:\noVNC" -ErrorAction SilentlyContinue
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "[*] Coba image alternatif..."
+            docker run -d --name guac -p 8080:8080 `
+              -e "WEBAPP_CONTEXT=ROOT" `
+              maxwaldorf/guacamole 2>$null
           }
 
-          Write-Host "[*] Memulai websockify di port 6080..."
-          Start-Process -FilePath "python" -ArgumentList "-m websockify --web C:\noVNC 6080 localhost:5900" -WindowStyle Hidden
+          Start-Sleep -Seconds 15
+          Write-Host "[+] Guacamole seharusnya running di port 8080"
 
-          Start-Sleep -Seconds 5
-          Write-Host "[+] noVNC web server aktif di port 6080"
-
-      - name: Install & Start Ngrok HTTP Tunnel
+      - name: Start Ngrok HTTP Tunnel
         shell: powershell
         run: |
           $token = "${{ github.event.inputs.ngrok_token }}"
+          $rdpPass = $env:RDP_PASS
 
-          Write-Host "[*] Download Ngrok..."
-          $ngrokUrl = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip"
-          Invoke-WebRequest -Uri $ngrokUrl -OutFile "$env:TEMP\ngrok.zip" -UseBasicParsing
+          Write-Host "[*] Setup Ngrok..."
+          $ngrokZip = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip"
+          Invoke-WebRequest -Uri $ngrokZip -OutFile "$env:TEMP\ngrok.zip" -UseBasicParsing
           New-Item -ItemType Directory -Force -Path "C:\ngrok" | Out-Null
           Expand-Archive -Path "$env:TEMP\ngrok.zip" -DestinationPath "C:\ngrok" -Force
 
           C:\ngrok\ngrok.exe config add-authtoken $token
-
-          Write-Host "[*] Memulai Ngrok HTTP tunnel ke port 6080..."
-          Start-Process -FilePath "C:\ngrok\ngrok.exe" -ArgumentList "http 6080" -WindowStyle Hidden
-
+          Start-Process -FilePath "C:\ngrok\ngrok.exe" -ArgumentList "http 8080" -WindowStyle Hidden
           Start-Sleep -Seconds 5
 
-          # Ambil URL dari API Ngrok
           $maxWait = 30
           $elapsed = 0
-          $ngrokUrl = ""
+          $publicUrl = ""
 
           while ($elapsed -lt $maxWait) {
             Start-Sleep -Seconds 2
@@ -142,7 +113,7 @@ jobs:
             try {
               $resp = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels" -ErrorAction Stop
               if ($resp.tunnels.Count -gt 0) {
-                $ngrokUrl = $resp.tunnels[0].public_url
+                $publicUrl = $resp.tunnels[0].public_url
                 break
               }
             } catch {
@@ -150,56 +121,52 @@ jobs:
             }
           }
 
-          $rdpPass = $env:RDP_PASS
-
-          if ($ngrokUrl -ne "") {
-            $browserUrl = "$ngrokUrl/vnc.html?autoconnect=true"
-            echo "BROWSER_URL=$browserUrl" >> $env:GITHUB_ENV
-
+          if ($publicUrl -ne "") {
+            echo "BROWSER_URL=$publicUrl" >> $env:GITHUB_ENV
             Write-Host ""
             Write-Host "===================================================="
-            Write-Host "   AKSES WINDOWS DARI BROWSER HP KAMU!"
+            Write-Host "   BUKA URL INI DI BROWSER HP!"
             Write-Host "===================================================="
-            Write-Host "  Buka URL ini di browser HP:"
+            Write-Host "  $publicUrl"
             Write-Host ""
-            Write-Host "  $browserUrl"
+            Write-Host "  Login Guacamole:"
+            Write-Host "  User     : guacadmin"
+            Write-Host "  Password : guacadmin"
             Write-Host ""
-            Write-Host "  VNC Password : vncpass1"
-            Write-Host "  (masukkan saat diminta di browser)"
-            Write-Host "===================================================="
-            Write-Host "  Info tambahan:"
-            Write-Host "  Username RDP : runneradmin"
-            Write-Host "  Password RDP : $rdpPass"
-            Write-Host "===================================================="
-          } else {
-            Write-Host "[!] Ngrok URL tidak terdeteksi"
+            Write-Host "  Setelah login, tambah koneksi RDP:"
+            Write-Host "  Host     : host.docker.internal"
+            Write-Host "  Port     : 3389"
             Write-Host "  Username : runneradmin"
             Write-Host "  Password : $rdpPass"
+            Write-Host "===================================================="
+          } else {
+            Write-Host "[!] Ngrok URL tidak muncul. Cek authtoken."
+            Write-Host "  Password Windows: $rdpPass"
           }
 
       - name: Keep Session Alive
         shell: powershell
         run: |
-          $inputDuration = "${{ github.event.inputs.rdp_duration }}"
-          if ([string]::IsNullOrWhiteSpace($inputDuration)) {
-            $inputDuration = "${{ github.event.inputs.session_duration }}"
-          }
           $duration = 350
-          try { $duration = [int]$inputDuration } catch {}
-          if ($duration -lt 1 -or $duration -gt 350) { $duration = 350 }
+          try {
+            $inp = "${{ github.event.inputs.session_duration }}"
+            $duration = [int]$inp
+            if ($duration -lt 1 -or $duration -gt 350) { $duration = 350 }
+          } catch {}
 
           $endTime = (Get-Date).AddMinutes($duration)
           $browserUrl = $env:BROWSER_URL
           $rdpPass = $env:RDP_PASS
 
-          Write-Host "[*] Sesi aktif selama $duration menit"
-          Write-Host "[*] Buka di browser: $browserUrl"
+          Write-Host "[*] Sesi aktif $duration menit"
+          Write-Host "[*] URL Browser : $browserUrl"
+          Write-Host "[*] Pass Windows: $rdpPass"
           Write-Host ""
 
           while ((Get-Date) -lt $endTime) {
             $remaining = [math]::Round(($endTime - (Get-Date)).TotalMinutes, 1)
             $now = Get-Date -Format "HH:mm:ss"
-            Write-Host "$now | Sisa: $remaining menit | URL: $browserUrl"
+            Write-Host "$now | Sisa: $remaining menit | $browserUrl"
             Start-Sleep -Seconds 60
           }
 
