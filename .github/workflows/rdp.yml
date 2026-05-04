@@ -37,63 +37,59 @@ jobs:
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "runneradmin" -ErrorAction SilentlyContinue
           Write-Host "[+] Remote Desktop aktif"
 
-      - name: Setup SSH Key & Start serveo Tunnel
+      - name: Start serveo Tunnel
         shell: powershell
         run: |
-          Write-Host "[*] Membuat SSH key..."
-
           $sshDir = "$env:USERPROFILE\.ssh"
           New-Item -ItemType Directory -Force -Path $sshDir | Out-Null
-
-          # Generate SSH key tanpa passphrase
           ssh-keygen -t rsa -b 2048 -f "$sshDir\id_rsa" -N '""' -q
+          Write-Host "[+] SSH key dibuat"
 
-          # Disable strict host checking
-          $sshConfig = "Host serveo.net`n  StrictHostKeyChecking no`n  UserKnownHostsFile /dev/null`n  ServerAliveInterval 30`n  ServerAliveCountMax 10`n"
-          $sshConfig | Out-File -FilePath "$sshDir\config" -Encoding ascii
-
-          Write-Host "[+] SSH key berhasil dibuat"
-          Write-Host "[*] Memulai tunnel ke serveo.net..."
-
+          # Coba beberapa port sampai ada yang berhasil
+          $ports = @(13389, 23389, 33389, 43389, 53389)
           $logFile = "C:\serveo.log"
-          New-Item -ItemType File -Force -Path $logFile | Out-Null
+          $errFile = "C:\serveo-err.log"
+          $successPort = ""
+          $proc = $null
 
-          # Jalankan SSH tunnel ke serveo.net port 3389
-          $sshArgs = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=30 -R 0:localhost:3389 serveo.net"
-          Start-Process -FilePath "ssh" -ArgumentList $sshArgs -RedirectStandardOutput $logFile -RedirectStandardError "C:\serveo-err.log" -WindowStyle Hidden
+          foreach ($port in $ports) {
+            Write-Host "[*] Mencoba port $port..."
 
-          Write-Host "[*] Menunggu tunnel aktif..."
+            New-Item -ItemType File -Force -Path $logFile | Out-Null
+            New-Item -ItemType File -Force -Path $errFile | Out-Null
 
-          $maxWait = 40
-          $elapsed = 0
-          $port = ""
+            $sshArgs = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -o ServerAliveInterval=20 -o ExitOnForwardFailure=yes -T -R ${port}:localhost:3389 serveo.net"
 
-          while ($elapsed -lt $maxWait) {
-            Start-Sleep -Seconds 2
-            $elapsed = $elapsed + 2
+            if ($proc -ne $null) {
+              Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            }
+
+            $proc = Start-Process -FilePath "ssh" -ArgumentList $sshArgs -RedirectStandardOutput $logFile -RedirectStandardError $errFile -WindowStyle Hidden -PassThru
+
+            Start-Sleep -Seconds 8
 
             $logContent = Get-Content $logFile -Raw -ErrorAction SilentlyContinue
-            $errContent = Get-Content "C:\serveo-err.log" -Raw -ErrorAction SilentlyContinue
+            $errContent = Get-Content $errFile -Raw -ErrorAction SilentlyContinue
             $combined = "$logContent $errContent"
 
-            if ($combined -match "Allocated port (\d+)") {
-              $port = $Matches[1]
-              break
-            }
-            if ($combined -match "forwarding.*?(\d{4,5})") {
-              $port = $Matches[1]
-              break
+            if ($combined -match "forwarding failed") {
+              Write-Host "  Port $port gagal, coba berikutnya..."
+              continue
             }
 
-            Write-Host "menunggu tunnel serveo... ($elapsed/$maxWait detik)"
+            if ($proc -ne $null -and -not $proc.HasExited) {
+              $successPort = $port
+              Write-Host "[+] Tunnel berhasil di port $port"
+              break
+            }
           }
 
           $rdpPass = $env:RDP_PASS
 
-          if ($port -ne "") {
-            $rdpAddress = "serveo.net:$port"
+          if ($successPort -ne "") {
+            $rdpAddress = "serveo.net:$successPort"
             echo "RDP_ADDRESS=$rdpAddress" >> $env:GITHUB_ENV
-            echo "RDP_PORT=$port" >> $env:GITHUB_ENV
+            echo "RDP_PORT=$successPort" >> $env:GITHUB_ENV
 
             Write-Host ""
             Write-Host "===================================================="
@@ -101,20 +97,20 @@ jobs:
             Write-Host "===================================================="
             Write-Host "  Alamat RDP  : $rdpAddress"
             Write-Host "  Host        : serveo.net"
-            Write-Host "  Port        : $port"
+            Write-Host "  Port        : $successPort"
             Write-Host "  Username    : runneradmin"
             Write-Host "  Password    : $rdpPass"
             Write-Host "===================================================="
             Write-Host "  Di Microsoft Remote Desktop:"
-            Write-Host "  PC Name  -> serveo.net:$port"
+            Write-Host "  PC Name  -> serveo.net:$successPort"
             Write-Host "  Username -> runneradmin"
             Write-Host "  Password -> $rdpPass"
             Write-Host "===================================================="
           } else {
             Write-Host ""
-            Write-Host "[!] Port tidak terdeteksi. Log serveo:"
+            Write-Host "[!] Semua port gagal. Log terakhir:"
             Get-Content $logFile -ErrorAction SilentlyContinue
-            Get-Content "C:\serveo-err.log" -ErrorAction SilentlyContinue
+            Get-Content $errFile -ErrorAction SilentlyContinue
             Write-Host ""
             Write-Host "  Username : runneradmin"
             Write-Host "  Password : $rdpPass"
